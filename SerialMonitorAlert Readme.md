@@ -1,72 +1,65 @@
 OVERVIEW
 
-This project is a standalone embedded wearable system designed to detect falls and monitor heart rate in real time. It is built using the ESP32 microcontroller and implements a Finite State Machine (FSM) for structured and reliable fall detection with reduced false positives.
+-This project is a standalone embedded wearable system designed to detect falls and monitor heart rate in real time. It is built using the ESP32 microcontroller and implements a Finite State Machine (FSM) for structured and reliable fall detection with reduced false positives.
 
 PROBLEM STATEMENT
 
-Falls are a major cause of injury among elderly individuals.
-
-Basic threshold-based systems generate frequent false alarms.
-
-A reliable embedded system is required to accurately detect real falls, reduce false positives, and provide a cancellation window before triggering emergency alerts.
+-Falls are a major cause of injury among elderly individuals.
+-Basic threshold-based systems generate frequent false alarms.
+-A reliable embedded system is required to accurately detect real falls, reduce false positives, and provide a cancellation window before triggering emergency alerts.
 
 PROJECT OBJECTIVES
 
-Develop a standalone embedded wearable system.
-
-Detect falls using motion sensing.
-
-Implement impact and immobility confirmation logic.
-
-Provide a configurable cancellation window (currently 5 seconds).
-
-Implement on-demand heart rate monitoring.
-
-Use structured embedded system design with a Finite State Machine.
+-Develop a standalone embedded wearable system.
+-Detect falls using motion sensing.
+-Implement impact and immobility confirmation logic.
+-Provide a configurable cancellation window (currently 5 seconds).
+-Implement on-demand heart rate monitoring.
+-Use structured embedded system design with a Finite State Machine.
 
 HARDWARE COMPONENTS
 
-ESP32 Microcontroller
+-ESP32 Microcontroller
 240 MHz processor
 I2C communication support
 Multiple GPIO interfaces
 Scalable for future IoT integration
 
 MPU6050 Accelerometer
-3-axis acceleration measurement
-Used for detecting sudden impact
-Communicates via I2C
+-3-axis acceleration measurement
+-Used for detecting sudden impact
+-Communicates via I2C
 
 MAX30102 Pulse Sensor
-Uses Photoplethysmography (PPG)
-Detects heart rate from blood volume changes
-BPM calculated from time interval between pulse peaks
+-Uses Photoplethysmography (PPG)
+-Detects heart rate from blood volume changes
+-BPM calculated from time interval between pulse peaks
 
 OLED Display
-Displays system states
-Shows heart rate readings
-Provides user feedback
+-Displays system states
+-Shows heart rate readings
+-Provides user feedback
 
 Buzzer
-Provides audible emergency alerts
+-Provides audible emergency alerts
 
 Buttons
-Cancel and mode button (supports triple-click detection)
-Dedicated panic button for immediate emergency trigger
+-Cancel and mode button (supports triple-click detection)
+-Dedicated panic button for immediate emergency trigger
 
 SYSTEM ARCHITECTURE
 
-Sensor Layer
+-Sensor Layer
 MPU6050 for motion detection
 MAX30102 for heart rate monitoring
 
-Processing Layer
+-Processing Layer
 ESP32 reads sensor data
 Computes acceleration magnitude
 Implements FSM-based decision logic
 Handles timing using millis()
 
-Output Layer
+-Output Layer
 OLED display for visual feedback
 Buzzer for audio alerts
 Serial Monitor for debugging and demonstration
