@@ -1,0 +1,271 @@
+#include <Wire.h>                      // I2C communication library
+#include <Adafruit_MPU6050.h>          // MPU6050 sensor library
+#include <Adafruit_Sensor.h>           // Base sensor class
+#include <Adafruit_GFX.h>              // Graphics library for OLED
+#include <Adafruit_SSD1306.h>          // OLED driver library
+#include "MAX30105.h"                  // MAX30102 pulse sensor library
+#include "heartRate.h"                 // Heart beat detection algorithm
+
+/* ---------------- OLED ---------------- */
+#define SCREEN_WIDTH 128               // OLED width in pixels
+#define SCREEN_HEIGHT 64               // OLED height in pixels
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1); // Create OLED object using I2C
+
+/* ---------------- PINS ---------------- */
+#define BUZZER_PIN 26                  // Buzzer connected to GPIO 26
+#define BUTTON_PIN 27                  // Cancel + triple-click button
+#define PANIC_BUTTON 25                // Dedicated panic button
+
+Adafruit_MPU6050 mpu;                  // Create MPU6050 object
+MAX30105 particleSensor;               // Create MAX30102 object
+
+/* ---------------- STATES ---------------- */
+enum SystemState {                     // Finite State Machine states
+  IDLE,                                // Normal monitoring state
+  IMPACT_DETECTED,                     // High acceleration detected
+  FALL_CONFIRMED,                      // Fall confirmed after immobility
+  EMERGENCY_ALERT                      // Emergency state active
+};
+
+SystemState currentState = IDLE;       // Initialize system in IDLE state
+
+/* ---------------- TIMING ---------------- */
+unsigned long immobileStart = 0;       // Stores time when immobility begins
+unsigned long alertStart = 0;          // Stores time when fall confirmed
+
+/* ---------------- HEART MODE ---------------- */
+bool heartMode = false;                // Flag to enable heart rate mode
+unsigned long lastBeat = 0;            // Stores last heartbeat timestamp
+float bpm = 0;                         // Stores calculated BPM
+
+/* ---------------- TRIPLE CLICK ---------------- */
+int clickCount = 0;                    // Counts button presses
+unsigned long lastClickTime = 0;       // Stores last click time
+const unsigned long clickTimeout = 1000; // Time window for triple-click detection
+
+/* ---------------- BUZZ ---------------- */
+void buzz(unsigned int duration_ms) {  // Function to generate buzzer tone
+  unsigned long start = millis();      // Store starting time
+  while (millis() - start < duration_ms) { // Run until duration ends
+    digitalWrite(BUZZER_PIN, HIGH);    // Turn buzzer ON
+    delayMicroseconds(500);            // Wait 500 microseconds
+    digitalWrite(BUZZER_PIN, LOW);     // Turn buzzer OFF
+    delayMicroseconds(500);            // Wait 500 microseconds
+  }
+}
+
+/* ---------------- DISPLAY HELPERS ---------------- */
+void centerText(String text, int textSize, int y) { // Function to center text
+  display.setTextSize(textSize);       // Set font size
+  display.setTextColor(WHITE);         // Set text color
+  int16_t x1, y1;                      // Variables for text bounds
+  uint16_t w, h;                       // Width and height of text
+  display.getTextBounds(text, 0, y, &x1, &y1, &w, &h); // Calculate text dimensions
+  int x = (SCREEN_WIDTH - w) / 2;      // Calculate centered x position
+  display.setCursor(x, y);             // Set cursor
+  display.println(text);               // Print text
+}
+
+void showIdleScreen() {
+  display.clearDisplay();              // Clear screen
+  centerText("MONITORING", 2, 20);     // Show monitoring text
+  display.display();                   // Refresh OLED
+}
+
+void showImpactScreen() {
+  display.clearDisplay();              // Clear screen
+  centerText("IMPACT!", 2, 20);        // Show impact text
+  display.display();                   // Refresh OLED
+}
+
+void showFallScreen() {
+  display.clearDisplay();              // Clear screen
+  centerText("FALL", 3, 5);            // Show fall text
+  centerText("Press to Cancel", 1, 50);// Show cancel instruction
+  display.display();                   // Refresh OLED
+}
+
+void showEmergencyScreen() {
+  display.clearDisplay();              // Clear screen
+  centerText("EMERGENCY!", 2, 10);     // Show emergency text
+  centerText("ALERT SENT", 2, 35);     // Show alert message
+  display.display();                   // Refresh OLED
+}
+
+void showHeartScreen(int bpmValue) {
+  display.clearDisplay();              // Clear screen
+  centerText("HEART RATE", 1, 5);      // Show heading
+  centerText(String(bpmValue) + " BPM", 3, 25); // Show BPM value
+  display.display();                   // Refresh OLED
+}
+
+/* ---------------- SETUP ---------------- */
+void setup() {
+
+  Serial.begin(115200);                // Start serial communication
+  Serial.println("System Initializing..."); // Print initialization message
+  
+  Wire.begin(21, 22);                  // Initialize I2C (SDA=21, SCL=22)
+
+  pinMode(BUZZER_PIN, OUTPUT);         // Set buzzer as output
+  pinMode(BUTTON_PIN, INPUT_PULLUP);   // Enable pull-up resistor
+  pinMode(PANIC_BUTTON, INPUT_PULLUP); // Enable pull-up resistor
+
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Initialize OLED
+  display.clearDisplay();              // Clear screen
+
+  mpu.begin();                         // Initialize MPU6050
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G); // Set ±8g range
+
+  particleSensor.begin(Wire, I2C_SPEED_STANDARD); // Initialize MAX30102
+  particleSensor.setup(60, 2, 2, 100, 411, 4096); // Configure sensor
+  particleSensor.setPulseAmplitudeRed(0x1F);      // Set LED intensity
+  particleSensor.setPulseAmplitudeIR(0x1F);       // Set IR intensity
+
+  Serial.println("System Ready. Monitoring..."); // Ready message
+  showIdleScreen();                 // Show initial screen
+}
+
+/* ---------------- HEART MODE ---------------- */
+void runHeartMode() {
+
+  long irValue = particleSensor.getIR(); // Read IR value
+
+  if (checkForBeat(irValue)) {           // If beat detected
+    long delta = millis() - lastBeat;    // Time between beats
+    lastBeat = millis();                 // Update last beat time
+    bpm = 60 / (delta / 1000.0);         // Calculate BPM
+
+    Serial.print("Heart Rate Detected: "); 
+    Serial.print(bpm);
+    Serial.println(" BPM");
+  }
+
+  if (irValue > 5000) {                  // If finger detected
+    showHeartScreen((int)bpm);           // Show BPM
+  } else {
+    display.clearDisplay();              // Clear screen
+    centerText("PLACE FINGER", 2, 20);   // Prompt user
+    display.display();
+  }
+
+  delay(20);                             // Small delay
+}
+
+/* ---------------- FALL MODE ---------------- */
+void runFallMode() {
+
+  sensors_event_t a, g, temp;            // Create sensor event structures
+  mpu.getEvent(&a, &g, &temp);           // Read accelerometer data
+
+  float magnitude = sqrt(                // Calculate resultant acceleration
+    a.acceleration.x * a.acceleration.x +
+    a.acceleration.y * a.acceleration.y +
+    a.acceleration.z * a.acceleration.z
+  );
+
+  bool cancelPressed = (digitalRead(BUTTON_PIN) == LOW); // Check cancel button
+
+  switch (currentState) {
+
+    case IDLE:
+      if (magnitude > 25) {              // If impact threshold exceeded
+        Serial.println("----- IMPACT DETECTED -----");
+        Serial.print("Impact Magnitude: ");
+        Serial.println(magnitude);
+
+        currentState = IMPACT_DETECTED;  // Change state
+        immobileStart = 0;               // Reset immobility timer
+        showImpactScreen();              // Update display
+      }
+      break;
+
+    case IMPACT_DETECTED:
+      if (magnitude > 8 && magnitude < 12) { // Check immobility near 1g
+
+        if (immobileStart == 0)
+          immobileStart = millis();      // Start immobility timer
+
+        if (millis() - immobileStart > 2000) { // If immobile for 2 sec
+          Serial.println(">>> FALL CONFIRMED <<<");
+
+          currentState = FALL_CONFIRMED; // Change state
+          alertStart = millis();         // Start alert timer
+          showFallScreen();              // Update display
+        }
+      } else {
+        immobileStart = 0;               // Reset timer if movement detected
+      }
+      break;
+
+    case FALL_CONFIRMED:
+      buzz(200);                         // Beep
+      delay(200);
+
+      if (cancelPressed) {               // If user cancels
+        Serial.println("Fall Cancelled by User.");
+        currentState = IDLE;
+        showIdleScreen();
+      }
+
+      if (millis() - alertStart > 5000) { // 5-second window
+        Serial.println("!!! EMERGENCY ALERT TRIGGERED !!!");
+
+        currentState = EMERGENCY_ALERT;  // Escalate
+        showEmergencyScreen();
+      }
+      break;
+
+    case EMERGENCY_ALERT:
+      buzz(100);                         // Continuous beeping
+      delay(100);
+
+      if (cancelPressed) {
+        Serial.println("Emergency Reset by User.");
+        currentState = IDLE;
+        showIdleScreen();
+      }
+      break;
+  }
+
+  delay(50);                             // Loop delay
+}
+
+/* ---------------- LOOP ---------------- */
+void loop() {
+
+  if (digitalRead(PANIC_BUTTON) == LOW && currentState != EMERGENCY_ALERT) {
+    Serial.println("Panic Button Pressed! Emergency Triggered.");
+    currentState = EMERGENCY_ALERT;      // Force emergency
+    showEmergencyScreen();
+    delay(300);                          // Debounce
+  }
+
+  static bool lastButtonState = HIGH;    // Store last button state
+  bool currentButtonState = digitalRead(BUTTON_PIN); // Read button
+
+  if (currentButtonState == LOW && lastButtonState == HIGH) {
+    clickCount++;                        // Increment click counter
+    lastClickTime = millis();            // Store click time
+    delay(150);                          // Debounce
+  }
+
+  lastButtonState = currentButtonState;  // Update last state
+
+  if (clickCount > 0 && millis() - lastClickTime > clickTimeout) {
+    if (clickCount == 3) {
+      heartMode = !heartMode;            // Toggle heart mode
+      Serial.println("Heart Rate Mode Toggled.");
+      if (!heartMode) {
+        showIdleScreen();
+      }
+    }
+    clickCount = 0;                      // Reset counter
+  }
+
+  if (heartMode) {
+    runHeartMode();                      // Run heart mode
+  } else {
+    runFallMode();                       // Run fall detection
+  }
+}
